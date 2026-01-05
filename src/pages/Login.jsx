@@ -33,7 +33,7 @@ export default function Login() {
                 withCredentials: true
             }).then((response) => {
                 console.log("Login response:", response);
-                navigate("/");
+                navigate("/chat");
 
 
             }).catch((error) => {

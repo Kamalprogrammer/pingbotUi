@@ -43,7 +43,7 @@ export default function Register() {
             console.error("Registration error:", error);
         } finally {
             setIsLoading(false);
-            navigate("/");
+            navigate("/chat");
         }
     };
 

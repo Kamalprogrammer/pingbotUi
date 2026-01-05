@@ -53,7 +53,7 @@ export default function Home() {
                     {/* CTA Buttons */}
                     <div className="flex flex-col sm:flex-row items-center justify-center gap-3 md:gap-4">
                         <Link
-                            to="/register"
+                            to="/chat"
                             className="w-full sm:w-auto group px-6 py-3 md:px-8 md:py-4 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-lg font-semibold text-base md:text-lg transition-all flex items-center justify-center gap-2"
                         >
                             Start Chatting
