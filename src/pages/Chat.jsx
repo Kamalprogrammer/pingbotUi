@@ -1,48 +1,73 @@
-import { useState } from "react";
+import { useMemo } from "react";
+import { useDispatch, useSelector } from "react-redux";
 import { Link } from "react-router-dom";
-
-// Sample data for chats (will be replaced with backend data)
-const initialChats = [
-    { id: "1", title: "How can I help you?", active: true },
-    { id: "2", title: "JSON Data for Table", active: false },
-    { id: "3", title: "Enhancing Donut Chart", active: false },
-    { id: "4", title: "Modern Hero Slider", active: false },
-    { id: "5", title: "Tailwind UI Refinement", active: false },
-];
+import {
+    addChat,
+    setActiveChat,
+    addMessage,
+    clearMessages,
+} from "../store/slices/chatSlice";
+import {
+    markConnected,
+    markDisconnected,
+    setIsSending,
+} from "../store/slices/socketSlice";
+import {
+    setIsSidebarOpen,
+    setShowNewChatModal,
+    setNewChatName,
+    resetNewChatModal,
+} from "../store/slices/uiSlice";
 
 export default function Chat() {
-    const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-    const [chats, setChats] = useState(initialChats);
-    const [activeChat, setActiveChat] = useState("1");
-    const [messages, setMessages] = useState([
-        { id: "1", role: "user", content: "hi" },
-        { id: "2", role: "model", content: "Hello! It's great to connect with you.\n\nI am ready to assist with whatever is on your mind today, whether you are looking to solve a complex problem, draft some content, or just need a thought partner to brainstorm with.\n\n**How can I help you get started?**\n\n• **Brainstorming:** Do you need ideas for a new project or solution?\n• **Drafting/Editing:** Do you need help writing or refining a document?\n• **Technical Support:** Do you have code to debug or a concept to explore?\n\nWould you like to share what you are working on so we can jump right in?" }
-    ]);
-    const [inputValue, setInputValue] = useState("");
-    const [isLoading, setIsLoading] = useState(false);
+    const dispatch = useDispatch();
+    
+    // Select state from Redux store
+    const { chats, activeChat, messages } = useSelector((state) => state.chat);
+    const { connectionStatus, isSending } = useSelector((state) => state.socket);
+    const { isSidebarOpen, showNewChatModal, newChatName } = useSelector((state) => state.ui);
+
+    const activeChatTitle = useMemo(() => {
+        const found = chats.find(c => c.id === activeChat);
+        return found ? found.title : "New Chat";
+    }, [activeChat, chats]);
 
     const handleNewChat = () => {
+        dispatch(setShowNewChatModal(true));
+    };
+
+    const createNewChat = () => {
+        if (!newChatName.trim()) return;
+        
         const newChat = {
             id: Date.now().toString(),
-            title: "New Chat",
+            title: newChatName.trim(),
             active: false
         };
-        setChats([newChat, ...chats]);
-        setActiveChat(newChat.id);
-        setMessages([]);
-        setIsSidebarOpen(false);
+        
+        dispatch(addChat(newChat));
+        dispatch(setActiveChat(newChat.id));
+        dispatch(clearMessages());
+        dispatch(setIsSidebarOpen(false));
+        dispatch(resetNewChatModal());
+    };
+
+    const cancelNewChat = () => {
+        dispatch(resetNewChatModal());
     };
 
     const handleSelectChat = (chatId) => {
-        setActiveChat(chatId);
-        setChats(chats.map(c => ({ ...c, active: c.id === chatId })));
-        setIsSidebarOpen(false);
-        // TODO: Load messages for this chat from backend
+        dispatch(setActiveChat(chatId));
+        dispatch(setIsSidebarOpen(false));
+        // Hook: load chat history for chatId from your socket or REST endpoint
     };
 
     const handleSendMessage = (e) => {
         e.preventDefault();
-        if (!inputValue.trim() || isLoading) return;
+        const inputElement = e.target.elements.messageInput;
+        const inputValue = inputElement.value;
+        
+        if (!inputValue.trim() || isSending) return;
 
         const userMessage = {
             id: Date.now().toString(),
@@ -50,31 +75,79 @@ export default function Chat() {
             content: inputValue.trim()
         };
 
-        setMessages(prev => [...prev, userMessage]);
-        setInputValue("");
-        setIsLoading(true);
+        dispatch(addMessage(userMessage));
+        inputElement.value = "";
+        dispatch(setIsSending(true));
 
-        // TODO: Integrate with socket.io
+        // Hook: emit the message over your socket implementation
+        // Example:
         // socket.emit('ai-prompt', { chat_id: activeChat, prompt: userMessage.content });
 
-        // Simulate AI response (remove after socket integration)
-        setTimeout(() => {
-            setMessages(prev => [...prev, {
-                id: (Date.now() + 1).toString(),
-                role: "model",
-                content: "This is a placeholder response. Connect to your backend socket to get real AI responses."
-            }]);
-            setIsLoading(false);
-        }, 1000);
+        // Stop the sending state once your socket acknowledges
+        // socket.on('ack', () => dispatch(setIsSending(false)));
+        dispatch(setIsSending(false));
     };
+
+    // Call this when a socket message arrives
+    const handleIncomingMessage = (incoming) => {
+        dispatch(addMessage({
+            id: incoming.id ?? Date.now().toString(),
+            role: incoming.role ?? "model",
+            content: incoming.content ?? ""
+        }));
+    };
+
+    // Call these from your socket lifecycle handlers
+    const handleMarkConnected = () => dispatch(markConnected());
+    const handleMarkDisconnected = () => dispatch(markDisconnected());
 
     return (
         <div className="h-screen bg-black flex overflow-hidden">
+            {/* New Chat Modal */}
+            {showNewChatModal && (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+                    <div className="bg-[#0f0f11] border border-white/20 rounded-2xl p-6 max-w-md w-full shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+                        <h2 className="text-white font-semibold text-lg mb-2">Create New Chat</h2>
+                        <p className="text-white/60 text-xs mb-4">This will appear at the top of your chat list</p>
+                        <input
+                            type="text"
+                            value={newChatName}
+                            onChange={(e) => dispatch(setNewChatName(e.target.value))}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' && newChatName.trim()) {
+                                    createNewChat();
+                                } else if (e.key === 'Escape') {
+                                    cancelNewChat();
+                                }
+                            }}
+                            placeholder="e.g., Project Planning, Code Review..."
+                            autoFocus
+                            className="w-full bg-[#1a1a1a] text-white placeholder-white/40 px-4 py-3 rounded-lg border border-white/20 focus:border-white/40 focus:outline-none text-sm"
+                        />
+                        <div className="flex gap-3 mt-6">
+                            <button
+                                onClick={cancelNewChat}
+                                className="flex-1 px-4 py-2.5 rounded-lg border border-white/20 text-white hover:bg-white/5 transition-colors text-sm font-medium"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={createNewChat}
+                                disabled={!newChatName.trim()}
+                                className="flex-1 px-4 py-2.5 rounded-lg bg-white text-black hover:bg-white/90 transition-colors text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                                Create
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Sidebar Overlay (Mobile) */}
             {isSidebarOpen && (
                 <div
                     className="fixed inset-0 bg-black/50 z-40 md:hidden"
-                    onClick={() => setIsSidebarOpen(false)}
+                    onClick={() => dispatch(setIsSidebarOpen(false))}
                 />
             )}
 
@@ -89,7 +162,7 @@ export default function Chat() {
                         <span className="text-white font-semibold">PingBot</span>
                     </Link>
                     <button
-                        onClick={() => setIsSidebarOpen(false)}
+                        onClick={() => dispatch(setIsSidebarOpen(false))}
                         className="p-1.5 rounded-lg hover:bg-white/10 md:hidden"
                     >
                         <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -142,116 +215,95 @@ export default function Chat() {
             {/* Main Chat Area */}
             <main className="flex-1 flex flex-col h-full">
                 {/* Header */}
-                <header className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+                <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between px-4 py-3 border-b border-white/10 bg-black/60 backdrop-blur">
                     <div className="flex items-center gap-3">
                         <button
-                            onClick={() => setIsSidebarOpen(true)}
+                            onClick={() => dispatch(setIsSidebarOpen(true))}
                             className="p-2 rounded-lg hover:bg-white/10 md:hidden"
                         >
                             <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
                             </svg>
                         </button>
-                        <span className="text-white font-medium text-sm md:text-base">How Can I Help You?</span>
+                        <div>
+                            <p className="text-white font-semibold text-sm md:text-base">{activeChatTitle}</p>
+                            <p className="text-white/50 text-xs">Ready for socket wiring: emit, ack, and stream responses.</p>
+                        </div>
                     </div>
                     <div className="flex items-center gap-3">
-                        <span className="text-white/60 text-sm hidden sm:block">PRO</span>
-                        <div className="w-8 h-8 rounded-full bg-gradient-to-r from-green-400 to-blue-500 flex items-center justify-center">
+                        <span className={`px-2 py-1 rounded-full text-xs font-semibold ${connectionStatus === "connected" ? "bg-green-500/20 text-green-300" : "bg-white/10 text-white/70"}`}>
+                            {connectionStatus === "connected" ? "Connected" : "Disconnected"}
+                        </span>
+                        <div className="w-9 h-9 rounded-full bg-gradient-to-r from-green-400 to-blue-500 flex items-center justify-center">
                             <span className="text-white font-semibold text-sm">K</span>
                         </div>
                     </div>
                 </header>
 
                 {/* Messages Area */}
-                <div className="flex-1 overflow-y-auto px-4 py-6">
-                    <div className="max-w-3xl mx-auto space-y-6">
+                <div className="flex-1 overflow-y-auto px-4 py-6 bg-gradient-to-b from-black via-[#0b0b0b] to-black">
+                    <div className="max-w-4xl mx-auto space-y-4">
+                        {messages.length === 0 && (
+                            <div className="border border-dashed border-white/20 rounded-2xl p-6 text-center text-white/60">
+                                <p className="font-semibold text-white">No messages yet</p>
+                                <p className="text-sm mt-2">Connect your socket, load history on select, and push incoming events into <span className="font-mono text-white">handleIncomingMessage</span>.</p>
+                            </div>
+                        )}
+
                         {messages.map(message => (
-                            <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                            <div key={message.id} className={`flex gap-3 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                                 {message.role === 'model' && (
-                                    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center mr-3">
-                                        <span className="text-white text-xs">✦</span>
+                                    <div className="flex-shrink-0 w-9 h-9 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center">
+                                        <span className="text-white text-xs">AI</span>
                                     </div>
                                 )}
-                                <div className={`max-w-[85%] md:max-w-[75%] ${message.role === 'user'
-                                        ? 'bg-white/10 rounded-2xl rounded-tr-sm px-4 py-3'
-                                        : ''
+                                <div className={`max-w-[80%] md:max-w-[70%] px-4 py-3 rounded-2xl shadow-lg ${message.role === 'user'
+                                        ? 'bg-white/10 border border-white/15 rounded-tr-sm'
+                                        : 'bg-[#0f0f11] border border-white/10 rounded-tl-sm'
                                     }`}>
                                     <p className="text-white text-sm md:text-base whitespace-pre-wrap leading-relaxed">
                                         {message.content}
                                     </p>
-                                    {message.role === 'model' && (
-                                        <div className="flex items-center gap-2 mt-3 pt-2">
-                                            <button className="p-1.5 rounded hover:bg-white/10 text-white/50 hover:text-white">
-                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 10h4.764a2 2 0 011.789 2.894l-3.5 7A2 2 0 0115.263 21h-4.017c-.163 0-.326-.02-.485-.06L7 20m7-10V5a2 2 0 00-2-2h-.095c-.5 0-.905.405-.905.905 0 .714-.211 1.412-.608 2.006L7 11v9m7-10h-2M7 20H5a2 2 0 01-2-2v-6a2 2 0 012-2h2.5" />
-                                                </svg>
-                                            </button>
-                                            <button className="p-1.5 rounded hover:bg-white/10 text-white/50 hover:text-white">
-                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 14H5.236a2 2 0 01-1.789-2.894l3.5-7A2 2 0 018.736 3h4.018a2 2 0 01.485.06l3.76.94m-7 10v5a2 2 0 002 2h.096c.5 0 .905-.405.905-.904 0-.715.211-1.413.608-2.008L17 13V4m-7 10h2m5-10h2a2 2 0 012 2v6a2 2 0 01-2 2h-2.5" />
-                                                </svg>
-                                            </button>
-                                            <button className="p-1.5 rounded hover:bg-white/10 text-white/50 hover:text-white">
-                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                                                </svg>
-                                            </button>
-                                            <button className="p-1.5 rounded hover:bg-white/10 text-white/50 hover:text-white">
-                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                                                </svg>
-                                            </button>
-                                        </div>
-                                    )}
                                 </div>
                                 {message.role === 'user' && (
-                                    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-r from-green-400 to-blue-500 flex items-center justify-center ml-3">
-                                        <span className="text-white text-xs font-semibold">K</span>
+                                    <div className="flex-shrink-0 w-9 h-9 rounded-full bg-gradient-to-r from-green-400 to-blue-500 flex items-center justify-center">
+                                        <span className="text-white text-xs font-semibold">You</span>
                                     </div>
                                 )}
                             </div>
                         ))}
-                        {isLoading && (
-                            <div className="flex justify-start">
-                                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center mr-3">
-                                    <span className="text-white text-xs">✦</span>
-                                </div>
-                                <div className="flex items-center gap-1">
-                                    <div className="w-2 h-2 bg-white/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                                    <div className="w-2 h-2 bg-white/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                                    <div className="w-2 h-2 bg-white/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
-                                </div>
-                            </div>
-                        )}
                     </div>
                 </div>
 
                 {/* Input Area */}
-                <div className="p-4 border-t border-white/10">
-                    <form onSubmit={handleSendMessage} className="max-w-3xl mx-auto">
-                        <div className="relative flex items-center bg-[#1a1a1a] rounded-2xl border border-white/20 focus-within:border-white/40 transition-colors">
-                            <button type="button" className="p-3 text-white/50 hover:text-white">
+                <div className="p-4 border-t border-white/10 bg-black/80 backdrop-blur">
+                    <form onSubmit={handleSendMessage} className="max-w-4xl mx-auto space-y-3">
+                        <div className="flex items-center gap-2 text-white/60 text-xs sm:text-sm">
+                            <div className="flex items-center gap-1">
+                                <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: connectionStatus === "connected" ? '#22c55e' : '#f97316' }}></span>
+                                <span>{connectionStatus === "connected" ? "Socket ready" : "Waiting for socket"}</span>
+                            </div>
+                            <span>•</span>
+                            <span>Use handleIncomingMessage to append streamed tokens.</span>
+                        </div>
+
+                        <div className="relative flex items-center bg-[#111111] rounded-2xl border border-white/15 focus-within:border-white/40 transition-colors">
+                            <button type="button" className="p-3 text-white/50 hover:text-white" onClick={handleMarkConnected}>
                                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                                 </svg>
                             </button>
                             <input
                                 type="text"
-                                value={inputValue}
-                                onChange={(e) => setInputValue(e.target.value)}
+                                name="messageInput"
                                 placeholder="Ask PingBot..."
                                 className="flex-1 bg-transparent text-white placeholder-white/40 py-3 px-2 focus:outline-none text-sm md:text-base"
                             />
                             <div className="flex items-center gap-1 pr-2">
-                                <button type="button" className="p-2 text-white/50 hover:text-white">
-                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                                    </svg>
-                                </button>
                                 <button
                                     type="submit"
-                                    disabled={!inputValue.trim() || isLoading}
-                                    className="p-2 text-white/50 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                                    disabled={isSending}
+                                    className="p-2 text-white/70 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
                                 >
                                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
@@ -259,10 +311,13 @@ export default function Chat() {
                                 </button>
                             </div>
                         </div>
+                        <div className="flex flex-wrap items-center gap-2 text-white/40 text-xs">
+                            <span>Wire up:</span>
+                            <span className="font-mono text-white">socket.emit('ai-prompt')</span>
+                            <span>•</span>
+                            <span className="font-mono text-white">socket.on('ai-response', handleIncomingMessage)</span>
+                        </div>
                     </form>
-                    <p className="text-center text-white/30 text-xs mt-3">
-                        PingBot can make mistakes, so double-check it
-                    </p>
                 </div>
             </main>
         </div>
