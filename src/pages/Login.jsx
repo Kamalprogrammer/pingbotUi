@@ -1,14 +1,10 @@
-import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { Link, useNavigate } from "react-router-dom";
 import ThemeToggle from "../components/ThemeToggle";
-import axios from "axios";
-
-const BASE_URL = import.meta.env.VITE_BASE_URL;
-
+import { useLoginMutation } from "../store/api/apiSlice";
 
 export default function Login() {
-    const [isLoading, setIsLoading] = useState(false);
+    const [login, { isLoading }] = useLoginMutation();
     const navigate = useNavigate();
 
     const {
@@ -23,26 +19,14 @@ export default function Login() {
     });
 
     const onSubmit = async (data) => {
-        setIsLoading(true);
-
         try {
-            axios.post(`${BASE_URL}/api/auth/login`, {
+            await login({
                 email: data.email,
                 password: data.password
-            }, {
-                withCredentials: true
-            }).then((response) => {
-                console.log("Login response:", response);
-                navigate("/chat");
-
-
-            }).catch((error) => {
-                console.error("Login error:", error);
-            });
+            }).unwrap();
+            navigate("/chat");
         } catch (error) {
             console.error("Login error:", error);
-        } finally {
-            setIsLoading(false);
         }
     };
 

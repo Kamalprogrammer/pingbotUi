@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { Link } from "react-router-dom";
 import {
@@ -6,6 +6,7 @@ import {
     setActiveChat,
     addMessage,
     clearMessages,
+    deleteChat,
 } from "../store/slices/chatSlice";
 import {
     markConnected,
@@ -14,18 +15,29 @@ import {
 } from "../store/slices/socketSlice";
 import {
     setIsSidebarOpen,
-    setShowNewChatModal,
-    setNewChatName,
-    resetNewChatModal,
 } from "../store/slices/uiSlice";
+import {
+    useCreateChatMutation,
+    useDeleteChatMutation,
+} from "../store/api/apiSlice";
+import { socket } from "../utils/socket";
 
 export default function Chat() {
     const dispatch = useDispatch();
+    const [isCreatingChat, setIsCreatingChat] = useState(false);
+    const [inlineChatName, setInlineChatName] = useState('');
+    const [openMenuId, setOpenMenuId] = useState(null);
+    const inputRef = useRef(null);
+    const menuRef = useRef(null);
+
+    // RTK Query mutations
+    const [createChatApi] = useCreateChatMutation();
+    const [deleteChatApi] = useDeleteChatMutation();
     
     // Select state from Redux store
     const { chats, activeChat, messages } = useSelector((state) => state.chat);
     const { connectionStatus, isSending } = useSelector((state) => state.socket);
-    const { isSidebarOpen, showNewChatModal, newChatName } = useSelector((state) => state.ui);
+    const { isSidebarOpen } = useSelector((state) => state.ui);
 
     const activeChatTitle = useMemo(() => {
         const found = chats.find(c => c.id === activeChat);
@@ -33,27 +45,116 @@ export default function Chat() {
     }, [activeChat, chats]);
 
     const handleNewChat = () => {
-        dispatch(setShowNewChatModal(true));
+        setIsCreatingChat(true);
+        setInlineChatName('');
     };
 
-    const createNewChat = () => {
-        if (!newChatName.trim()) return;
-        
-        const newChat = {
-            id: Date.now().toString(),
-            title: newChatName.trim(),
-            active: false
+    // Focus the input when creating a new chat
+    useEffect(() => {
+        if (isCreatingChat && inputRef.current) {
+            inputRef.current.focus();
+        }
+    }, [isCreatingChat]);
+
+    // Close menu when clicking outside
+    useEffect(() => {
+        const handleClickOutside = (event) => {
+            if (menuRef.current && !menuRef.current.contains(event.target)) {
+                setOpenMenuId(null);
+            }
         };
-        
-        dispatch(addChat(newChat));
-        dispatch(setActiveChat(newChat.id));
-        dispatch(clearMessages());
-        dispatch(setIsSidebarOpen(false));
-        dispatch(resetNewChatModal());
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
+
+    // Handle socket lifecycle
+    useEffect(() => {
+        // Connect to the socket server
+        socket.connect();
+
+        socket.on("connect", () => {
+            dispatch(markConnected());
+        });
+
+        socket.on("disconnect", () => {
+            dispatch(markDisconnected());
+        });
+
+        // --- STEP 1: Listen for the AI Reply ---
+        socket.on("ai-response", (data) => {
+            console.log("Received AI message:", data.content);
+            dispatch(addMessage({
+                id: data.id ?? Date.now().toString(),
+                role: "model",
+                content: data.content
+            }));
+            dispatch(setIsSending(false));
+        });
+
+        // --- STEP 2: Listen for Errors (like the 429 limit) ---
+        socket.on("ai-error", (data) => {
+            alert("AI Error: " + data.message);
+            dispatch(setIsSending(false));
+        });
+
+        return () => {
+            socket.off("connect");
+            socket.off("disconnect");
+            socket.off("ai-response");
+            socket.off("ai-error");
+            socket.disconnect();
+        };
+    }, [dispatch]);
+
+    const handleToggleMenu = (e, chatId) => {
+        e.stopPropagation();
+        setOpenMenuId(openMenuId === chatId ? null : chatId);
     };
 
-    const cancelNewChat = () => {
-        dispatch(resetNewChatModal());
+    const handleDeleteChat = async (e, chatId) => {
+        e.stopPropagation();
+        try {
+            await deleteChatApi(chatId).unwrap();
+            dispatch(deleteChat(chatId));
+        } catch (error) {
+            console.error('Failed to delete chat:', error);
+            // Still delete locally if API fails (offline support)
+            dispatch(deleteChat(chatId));
+        }
+        setOpenMenuId(null);
+    };
+
+    const handleInlineCreateChat = async () => {
+        if (!inlineChatName.trim()) {
+            setIsCreatingChat(false);
+            return;
+        }
+        
+        try {
+            // Call API to create chat
+            const result = await createChatApi({ title: inlineChatName.trim() }).unwrap();
+            
+            // Add to local state with server-generated ID
+            const newChat = {
+                id: result.chat._id,
+                title: result.chat.title,
+                active: false
+            };
+            
+            dispatch(addChat(newChat));
+            dispatch(setActiveChat(newChat.id));
+            dispatch(clearMessages());
+        } catch (error) {
+            console.error('Failed to create chat:', error);
+        }
+        
+        setIsCreatingChat(false);
+        setInlineChatName('');
+    };
+
+    const handleInlineCancelChat = () => {
+        setIsCreatingChat(false);
+        setInlineChatName('');
     };
 
     const handleSelectChat = (chatId) => {
@@ -67,7 +168,7 @@ export default function Chat() {
         const inputElement = e.target.elements.messageInput;
         const inputValue = inputElement.value;
         
-        if (!inputValue.trim() || isSending) return;
+        if (!inputValue.trim() || isSending || !activeChat) return;
 
         const userMessage = {
             id: Date.now().toString(),
@@ -79,13 +180,12 @@ export default function Chat() {
         inputElement.value = "";
         dispatch(setIsSending(true));
 
-        // Hook: emit the message over your socket implementation
-        // Example:
-        // socket.emit('ai-prompt', { chat_id: activeChat, prompt: userMessage.content });
-
-        // Stop the sending state once your socket acknowledges
-        // socket.on('ack', () => dispatch(setIsSending(false)));
-        dispatch(setIsSending(false));
+        // --- STEP 3: Emit 'ai-prompt' to the server ---
+        const payload = {
+            chat_id: activeChat,
+            prompt: inputValue.trim()
+        };
+        socket.emit("ai-prompt", payload);
     };
 
     // Call this when a socket message arrives
@@ -103,46 +203,6 @@ export default function Chat() {
 
     return (
         <div className="h-screen bg-black flex overflow-hidden">
-            {/* New Chat Modal */}
-            {showNewChatModal && (
-                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-                    <div className="bg-[#0f0f11] border border-white/20 rounded-2xl p-6 max-w-md w-full shadow-2xl animate-in fade-in zoom-in-95 duration-200">
-                        <h2 className="text-white font-semibold text-lg mb-2">Create New Chat</h2>
-                        <p className="text-white/60 text-xs mb-4">This will appear at the top of your chat list</p>
-                        <input
-                            type="text"
-                            value={newChatName}
-                            onChange={(e) => dispatch(setNewChatName(e.target.value))}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter' && newChatName.trim()) {
-                                    createNewChat();
-                                } else if (e.key === 'Escape') {
-                                    cancelNewChat();
-                                }
-                            }}
-                            placeholder="e.g., Project Planning, Code Review..."
-                            autoFocus
-                            className="w-full bg-[#1a1a1a] text-white placeholder-white/40 px-4 py-3 rounded-lg border border-white/20 focus:border-white/40 focus:outline-none text-sm"
-                        />
-                        <div className="flex gap-3 mt-6">
-                            <button
-                                onClick={cancelNewChat}
-                                className="flex-1 px-4 py-2.5 rounded-lg border border-white/20 text-white hover:bg-white/5 transition-colors text-sm font-medium"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={createNewChat}
-                                disabled={!newChatName.trim()}
-                                className="flex-1 px-4 py-2.5 rounded-lg bg-white text-black hover:bg-white/90 transition-colors text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
-                            >
-                                Create
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
             {/* Sidebar Overlay (Mobile) */}
             {isSidebarOpen && (
                 <div
@@ -186,17 +246,91 @@ export default function Chat() {
 
                 {/* Chat List */}
                 <div className="flex-1 overflow-y-auto px-2">
+                    {/* Inline New Chat Input */}
+                    {isCreatingChat && (
+                        <div className="mb-2 p-2 bg-white/5 rounded-lg border border-white/20">
+                            <input
+                                ref={inputRef}
+                                type="text"
+                                value={inlineChatName}
+                                onChange={(e) => setInlineChatName(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                        handleInlineCreateChat();
+                                    } else if (e.key === 'Escape') {
+                                        handleInlineCancelChat();
+                                    }
+                                }}
+                                onBlur={() => {
+                                    // Delay to allow button clicks
+                                    setTimeout(() => {
+                                        if (!inlineChatName.trim()) {
+                                            handleInlineCancelChat();
+                                        }
+                                    }, 150);
+                                }}
+                                placeholder="Enter chat name..."
+                                className="w-full bg-[#1a1a1a] text-white placeholder-white/40 px-3 py-2 rounded-lg border border-white/20 focus:border-white/40 focus:outline-none text-sm"
+                            />
+                            <div className="flex gap-2 mt-2">
+                                <button
+                                    onClick={handleInlineCancelChat}
+                                    className="flex-1 px-2 py-1.5 rounded-lg border border-white/20 text-white/70 hover:bg-white/5 transition-colors text-xs"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleInlineCreateChat}
+                                    disabled={!inlineChatName.trim()}
+                                    className="flex-1 px-2 py-1.5 rounded-lg bg-white text-black hover:bg-white/90 transition-colors text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                    Create
+                                </button>
+                            </div>
+                        </div>
+                    )}
                     {chats.map(chat => (
-                        <button
+                        <div
                             key={chat.id}
-                            onClick={() => handleSelectChat(chat.id)}
-                            className={`w-full text-left px-3 py-2.5 rounded-lg mb-1 text-sm truncate transition-colors ${activeChat === chat.id
+                            className={`group relative flex items-center justify-between rounded-lg mb-1 transition-colors ${activeChat === chat.id
                                     ? 'bg-white/10 text-white'
                                     : 'text-white/70 hover:bg-white/5 hover:text-white'
                                 }`}
                         >
-                            {chat.title}
-                        </button>
+                            <button
+                                onClick={() => handleSelectChat(chat.id)}
+                                className="flex-1 text-left px-3 py-2.5 text-sm truncate"
+                            >
+                                {chat.title}
+                            </button>
+                            {/* Three-dot menu */}
+                            <div className="relative" ref={openMenuId === chat.id ? menuRef : null}>
+                                <button
+                                    onClick={(e) => handleToggleMenu(e, chat.id)}
+                                    className="p-1.5 mr-1 rounded-md opacity-0 group-hover:opacity-100 hover:bg-white/10 transition-all"
+                                >
+                                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                                        <circle cx="12" cy="5" r="2" />
+                                        <circle cx="12" cy="12" r="2" />
+                                        <circle cx="12" cy="19" r="2" />
+                                    </svg>
+                                </button>
+                                {/* Dropdown Menu */}
+                                {openMenuId === chat.id && (
+                                    <div className="absolute right-0 top-full mt-1 w-36 bg-[#1a1a1a] border border-white/20 rounded-lg shadow-xl z-50 py-1">
+                                        <button
+                                            onClick={(e) => handleDeleteChat(e, chat.id)}
+                                            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-400 hover:bg-white/10 transition-colors"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                            </svg>
+                                            Delete
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
                     ))}
                 </div>
 

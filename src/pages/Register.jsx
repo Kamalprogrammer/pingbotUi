@@ -1,13 +1,10 @@
-import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { Link, useNavigate } from "react-router-dom";
 import ThemeToggle from "../components/ThemeToggle";
-import axios from "axios";
-
-const BASE_URL = import.meta.env.VITE_BASE_URL;
+import { useRegisterMutation } from "../store/api/apiSlice";
 
 export default function Register() {
-    const [isLoading, setIsLoading] = useState(false);
+    const [registerUser, { isLoading }] = useRegisterMutation();
     const navigate = useNavigate();
     const {
         register,
@@ -23,8 +20,6 @@ export default function Register() {
     });
 
     const onSubmit = async (data) => {
-        setIsLoading(true);
-
         const apiData = {
             fullName: {
                 firstName: data.firstName,
@@ -35,15 +30,10 @@ export default function Register() {
         };
 
         try {
-            console.log("Register data:", apiData);
-            await axios.post(`${BASE_URL}/api/auth/register`, apiData, {
-                withCredentials: true
-            });
+            await registerUser(apiData).unwrap();
+            navigate("/chat");
         } catch (error) {
             console.error("Registration error:", error);
-        } finally {
-            setIsLoading(false);
-            navigate("/chat");
         }
     };
 

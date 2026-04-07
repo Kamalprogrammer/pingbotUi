@@ -38,6 +38,15 @@ const chatSlice = createSlice({
         clearMessages: (state) => {
             state.messages = [];
         },
+         deleteChat: (state, action) => {
+            const chatId = action.payload;
+            state.chats = state.chats.filter(c => c.id !== chatId);
+            // If deleted chat was active, switch to first available chat
+            if (state.activeChat === chatId) {
+                state.activeChat = state.chats.length > 0 ? state.chats[0].id : null;
+                state.messages = [];
+            }
+        },
     },
 });
 
@@ -48,6 +57,7 @@ export const {
     setMessages,
     addMessage,
     clearMessages,
+    deleteChat,
 } = chatSlice.actions;
 
 export default chatSlice.reducer;
